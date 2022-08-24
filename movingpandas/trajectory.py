@@ -11,10 +11,16 @@ from geopandas import GeoDataFrame
 from geopy.distance import geodesic
 
 try:
+    import pymeos
+except ImportError:
+    pymeos = None
+
+try:
     from pyproj import CRS
 except ImportError:
     from fiona.crs import from_epsg
 
+from . import _compat as compat
 from .overlay import clip, intersection, intersects, create_entry_and_exit_points
 from .time_range_utils import SpatioTemporalRange
 from .geometry_utils import (
@@ -30,7 +36,7 @@ SPEED_COL_NAME = "speed"
 DIRECTION_COL_NAME = "direction"
 DISTANCE_COL_NAME = "distance"
 TIMEDELTA_COL_NAME = "timedelta"
-
+PYMEOS_POINT_COL_NAME = "_pymeos_point_instance"
 
 class MissingCRSWarning(UserWarning, ValueError):
     pass
@@ -134,6 +140,46 @@ class Trajectory:
             self.is_latlon = crs.is_geographic
         except NameError:
             self.is_latlon = self.crs["init"] == from_epsg(4326)["init"]
+        if compat.USE_PYMEOS:
+            self._pymeos_point_column_name = PYMEOS_POINT_COL_NAME
+            self._create_pymeos_point_column()
+            
+    def _create_pymeos_point_column(self):
+        self.df[self.get_pymeos_point_column_name()] = \
+            self.df.apply(self._create_pymeos_point, axis=1)
+
+    def _create_pymeos_point(self, row): 
+        if self.is_latlon:
+            pymeos_point = pymeos.TGeogPointInst(
+                string=f"{row[self.get_geom_column_name()]}@{row.name}",
+                srid=self.crs
+            )
+        else:
+            pymeos_point =  pymeos.TGeomPointInst(
+                string=f"{row[self.get_geom_column_name()]}@{row.name}",
+                srid=self.crs
+            )
+        return pymeos_point
+
+    def _create_pymeos_seq(self): 
+        # TODO: optimize the construction of pymeos sequence
+        # Currently update pymeos point column before creating sequence
+        self._create_pymeos_point_column()
+        if self.is_latlon:
+            pymeos_seq = pymeos.TGeogPointSeq(
+                instant_list=self.df[self.get_pymeos_point_column_name()], 
+                normalize=False
+            )
+        else:
+            pymeos_seq = pymeos.TGeomPointSeq(
+                instant_list=self.df[self.get_pymeos_point_column_name()], 
+                normalize=False
+            )
+        return pymeos_seq
+
+    def _check_timezone_exist(self):
+        ts_sample = self.df.index[0]
+        return ts_sample.tzinfo is not None and ts_sample.tzinfo.utcoffset(ts_sample) is not None
 
     def __str__(self):
         try:
@@ -341,6 +387,19 @@ class Trajectory:
         """
         return self.df.geometry.name
 
+    def get_pymeos_point_column_name(self):
+        """
+        Return name of the pymeos point column
+
+        Returns
+        -------
+        string
+        """
+        if hasattr(self, "_pymeos_point_column_name"):
+            return self._pymeos_point_column_name
+        else:
+            return PYMEOS_POINT_COL_NAME
+
     def to_linestring(self):
         """
         Return trajectory geometry as LineString.
@@ -380,7 +439,13 @@ class Trajectory:
         -------
         GeoDataFrame
         """
-        return self.df
+        point_gdf = self.df.copy()
+        if compat.USE_PYMEOS:
+            point_gdf.drop(
+                columns=[self.get_pymeos_point_column_name()], 
+                inplace=True
+            )
+        return point_gdf
 
     def to_line_gdf(self):
         """
@@ -391,6 +456,11 @@ class Trajectory:
         GeoDataFrame
         """
         line_gdf = self._to_line_df()
+        if compat.USE_PYMEOS:
+            line_gdf.drop(
+                columns=[self.get_pymeos_point_column_name()], 
+                inplace=True
+            )
         line_gdf.drop(columns=[self.get_geom_column_name(), "prev_pt"], inplace=True)
         line_gdf.reset_index(drop=True, inplace=True)
         line_gdf.rename(columns={"line": "geometry"}, inplace=True)
@@ -852,7 +922,20 @@ class Trajectory:
                 f"Use overwrite=True to overwrite exiting values or update the "
                 f"name arg."
             )
-        self.df = self._get_df_with_speed(name)
+        if compat.USE_PYMEOS:
+            pymeos_seq = self._create_pymeos_seq()
+            speed_seq = pymeos_seq.speed
+            tz_exist = self._check_timezone_exist()
+            if tz_exist:
+                data = [(instant.value, instant.timestamp) for instant in speed_seq.instants]
+            else:
+                data = [(instant.value, instant.timestamp.replace(tzinfo=None)) for instant in speed_seq.instants]
+            df_speed = DataFrame(data, columns=[name, 't']).set_index('t')
+            # TODO: Speed calculated by PyMEOS is different from MVP implementation 
+            # assert len(df_speed) == len(self.df)
+            self.df[name] = df_speed
+        else:
+            self.df = self._get_df_with_speed(name)
 
     def add_timedelta(self, overwrite=False, name=TIMEDELTA_COL_NAME):
         """

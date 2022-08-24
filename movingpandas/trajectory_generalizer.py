@@ -4,6 +4,12 @@ from copy import copy
 from shapely.geometry import LineString, Point
 import pandas as pd
 
+try:
+    import pymeos
+except ImportError:
+    pymeos = None
+
+from . import _compat as compact
 from .trajectory import Trajectory
 from .trajectory_collection import TrajectoryCollection
 from .geometry_utils import measure_distance_geodesic, measure_distance_euclidean
@@ -201,15 +207,21 @@ class DouglasPeuckerGeneralizer(TrajectoryGeneralizer):
     """
 
     def _generalize_traj(self, traj, tolerance):
+        if compact.USE_PYMEOS:
+            pymeos_seq = traj._create_pymeos_seq()
+            simplified_seq = pymeos_seq.simplify(synchronized=False, tolerance=tolerance)
+            simplified_coords = [instant.value.coords[0] for instant in simplified_seq.instants]
+        else:
+            simplified_coords = (
+                traj.to_linestring().simplify(tolerance, preserve_topology=False).coords
+            )
+
         keep_rows = []
         i = 0
-        simplified = (
-            traj.to_linestring().simplify(tolerance, preserve_topology=False).coords
-        )
 
         for index, row in traj.df.iterrows():
             current_pt = row[traj.get_geom_column_name()]
-            if current_pt.coords[0] in simplified:
+            if current_pt.coords[0] in simplified_coords:
                 keep_rows.append(i)
             i += 1
 
