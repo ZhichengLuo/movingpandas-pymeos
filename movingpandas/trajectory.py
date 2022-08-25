@@ -12,6 +12,8 @@ from geopy.distance import geodesic
 
 try:
     import pymeos
+    # TODO: design issue: when to initialize and finalize
+    pymeos.meos_initialize()
 except ImportError:
     pymeos = None
 
@@ -142,7 +144,6 @@ class Trajectory:
             self.is_latlon = self.crs["init"] == from_epsg(4326)["init"]
         if compat.USE_PYMEOS:
             self._pymeos_point_column_name = PYMEOS_POINT_COL_NAME
-            self._create_pymeos_point_column()
             
     def _create_pymeos_point_column(self):
         self.df[self.get_pymeos_point_column_name()] = \
@@ -440,7 +441,7 @@ class Trajectory:
         GeoDataFrame
         """
         point_gdf = self.df.copy()
-        if compat.USE_PYMEOS:
+        if compat.USE_PYMEOS and self.get_pymeos_point_column_name() in self.df.columns:
             point_gdf.drop(
                 columns=[self.get_pymeos_point_column_name()], 
                 inplace=True
@@ -456,7 +457,7 @@ class Trajectory:
         GeoDataFrame
         """
         line_gdf = self._to_line_df()
-        if compat.USE_PYMEOS:
+        if compat.USE_PYMEOS and self.get_pymeos_point_column_name() in self.df.columns:
             line_gdf.drop(
                 columns=[self.get_pymeos_point_column_name()], 
                 inplace=True

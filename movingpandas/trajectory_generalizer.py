@@ -210,7 +210,7 @@ class DouglasPeuckerGeneralizer(TrajectoryGeneralizer):
         if compact.USE_PYMEOS:
             pymeos_seq = traj._create_pymeos_seq()
             simplified_seq = pymeos_seq.simplify(synchronized=False, tolerance=tolerance)
-            simplified_coords = [instant.value.coords[0] for instant in simplified_seq.instants]
+            simplified_coords = [value.coords[0] for value in simplified_seq.values]
         else:
             simplified_coords = (
                 traj.to_linestring().simplify(tolerance, preserve_topology=False).coords
